@@ -116,3 +116,4 @@ jobs:
           # ===== Discordに送信 =====
           jq -n --arg c "$MSG" '{content: $c, allowed_mentions: {parse: ["roles"]}}' \
           | curl -sSf -H "Content-Type: application/json" -d @- "$WEBHOOK"
+
