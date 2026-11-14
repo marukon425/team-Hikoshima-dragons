@@ -16,7 +16,7 @@ jobs:
       - name: Discordに送る
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          MASTER_ROLE_ID: ${{ vars.DISCORD_MASTER_ROLE_ID }}
+          MASTER_ROLE_ID: "1569156143920451634"
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           ACTOR: ${{ github.actor }}
