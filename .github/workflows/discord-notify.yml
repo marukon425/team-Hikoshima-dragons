@@ -9,58 +9,110 @@ on:
 jobs:
   notify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Discordに送る
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          MASTER_ROLE_ID: ${{ vars.DISCORD_MASTER_ROLE_ID }}
+          GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           ACTOR: ${{ github.actor }}
           BRANCH: ${{ github.ref_name }}
+          CREATED: ${{ github.event.created }}
+          DELETED: ${{ github.event.deleted }}
           HEAD_MSG: ${{ github.event.head_commit.message }}
           COMMITS: ${{ toJSON(github.event.commits) }}
           COMPARE_URL: ${{ github.event.compare }}
           PR_ACTION: ${{ github.event.action }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           PR_MERGED: ${{ github.event.pull_request.merged }}
           PR_DRAFT: ${{ github.event.pull_request.draft }}
           PR_HEAD: ${{ github.event.pull_request.head.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
+          MAIN_UPDATED=false   # mainが更新された（push or マージ）ときに true
+
+          # ===== 通知の本文を作る =====
           if [ "$EVENT" = "push" ]; then
-            # PRマージ由来のpushはPR側で通知するのでスキップ
-            [[ "$HEAD_MSG" == "Merge pull request"* ]] && exit 0
-            LIST=$(echo "$COMMITS" | jq -r '[.[] | select(.message | startswith("Merge") | not) | "・" + (.message | split("\n")[0])] | join("\n")')
-            URL="$COMPARE_URL"
-            if [ "$BRANCH" = "main" ]; then
-              TITLE="⚠️ mainが直接更新された"
-              DESC="${ACTOR} がmainに直接pushしたよ"$'\n\n'"${LIST}"
-              NEXT="git pull origin main で最新にしてね（本来はPR経由で！）"
-              COLOR=15548997
+            [ "$DELETED" = "true" ] && exit 0                       # ブランチ削除は通知しない
+            [[ "$HEAD_MSG" == "Merge pull request"* ]] && exit 0    # PRマージ由来はPR側で通知
+
+            if [ "$CREATED" = "true" ]; then
+              MSG="🌱 ${ACTOR}が${BRANCH}ブランチを作成しました。"
+            elif [ "$BRANCH" = "main" ]; then
+              MSG="📦 ${ACTOR}がmainでpushしました。"
+              MAIN_UPDATED=true
             else
-              TITLE="🛠 ${ACTOR} が ${BRANCH} で作業中"
-              DESC="$LIST"
-              NEXT="対応不要（見るだけでOK）"
-              COLOR=9807270
+              MSG="🛠 ${ACTOR}が${BRANCH}でpushしました。"
             fi
 
-          elif [ "$EVENT" = "pull_request" ]; then
-            URL="$PR_URL"
+            # コミットメッセージ一覧（Merge〜は除外、最大10件）
+            LIST=$(echo "$COMMITS" | jq -r '[.[] | select(.message | startswith("Merge") | not) | "・" + (.message | split("\n")[0])] | .[:10] | join("\n")')
+            [ -n "$LIST" ] && MSG="${MSG}"$'\n'"${LIST}"
+            LINK="$COMPARE_URL"
+            CHANGER="$ACTOR"
+
+          else
             if [ "$PR_ACTION" = "closed" ]; then
-              [ "$PR_MERGED" != "true" ] && exit 0   # マージされずに閉じたものは通知しない
-              TITLE="✅ mainに取り込まれた：${PR_TITLE}"
-              DESC="${ACTOR} が ${PR_HEAD} をmainにマージしたよ"
-              NEXT="作業を始める前に git switch main → git pull origin main"
-              COLOR=5763719
+              [ "$PR_MERGED" != "true" ] && exit 0                  # マージせず閉じたPRは通知しない
+              if [ "$PR_BASE" = "main" ]; then
+                MSG="✅ ${ACTOR}がmainに${PR_HEAD}をマージしました。"
+                MAIN_UPDATED=true
+              else
+                MSG="🔀 ${ACTOR}が${PR_HEAD}から${PR_BASE}にマージしました。"
+              fi
             else
-              [ "$PR_DRAFT" = "true" ] && exit 0      # 下書きPRは通知しない
-              TITLE="👀 レビュー依頼：${PR_TITLE}"
-              DESC="${ACTOR} が ${PR_HEAD} → main のPRを出したよ"
-              NEXT="誰か1人、中身を見て Approve してあげて"
-              COLOR=3447003
+              [ "$PR_DRAFT" = "true" ] && exit 0                    # 下書きPRは通知しない
+              MSG="👀 ${PR_AUTHOR}が${PR_HEAD}から${PR_BASE}へのPRを出しました。レビューをお願いします。"
             fi
+            MSG="${MSG}"$'\n'"「${PR_TITLE}」"
+            LINK="$PR_URL"
+            CHANGER="$PR_AUTHOR"   # 変更を書いたのはPRを作った人
           fi
 
-          jq -n --arg t "$TITLE" --arg d "$DESC" --arg n "$NEXT" --arg u "$URL" --argjson c "$COLOR" \
-            '{embeds:[{title:$t, description:$d, url:$u, color:$c,
-                       fields:[{name:"👉 みんながやること", value:$n}]}]}' \
-          | curl -sS -H "Content-Type: application/json" -d @- "$WEBHOOK"
+          # ===== mainが更新されたときだけ、変更ファイルをチェック =====
+          if [ "$MAIN_UPDATED" = "true" ]; then
+            if [ "$EVENT" = "push" ]; then
+              FILES=$(echo "$COMMITS" | jq -r '[.[] | .added[], .modified[], .removed[]] | unique | .[]')
+            else
+              FILES=$(gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only)
+            fi
+
+            # Docker関連
+            if echo "$FILES" | grep -qE '(^|/)(Dockerfile|docker-compose\.ya?ml|requirements\.txt)$'; then
+              MSG="${MSG}"$'\n\n'"🐳 **Docker関連のファイルが変更されました**"
+              MSG="${MSG}"$'\n'"1. \`git switch main\` → \`git pull origin main\`"
+              MSG="${MSG}"$'\n'"2. \`cd Docker_env\` → \`docker compose up -d --build\`"
+            fi
+
+            # models.py / マイグレーション関連
+            MODELS_CHANGED=false
+            MIGRATIONS_CHANGED=false
+            echo "$FILES" | grep -qE '(^|/)models\.py$' && MODELS_CHANGED=true
+            echo "$FILES" | grep -qE '/migrations/[^/]+\.py$' && MIGRATIONS_CHANGED=true
+
+            if [ "$MODELS_CHANGED" = "true" ] || [ "$MIGRATIONS_CHANGED" = "true" ]; then
+              MSG="${MSG}"$'\n\n'"🗄️ **DBの構造が変更されました**"
+              MSG="${MSG}"$'\n'"pull後に \`docker compose exec web python manage.py migrate\` を実行してください"
+              MSG="${MSG}"$'\n'"（makemigrations は打たないこと）"
+            fi
+
+            if [ "$MODELS_CHANGED" = "true" ] && [ "$MIGRATIONS_CHANGED" = "false" ]; then
+              MSG="${MSG}"$'\n\n'"⚠️ **models.py が変わっているのにマイグレーションファイルがありません**"
+              MSG="${MSG}"$'\n'"${CHANGER}さん：DBに関わる変更なら makemigrations してmigrationsファイルをコミットしてください"
+            fi
+
+            MSG="${MSG}"$'\n\n'"<@&${MASTER_ROLE_ID}> は動作確認を実施してください。"
+          fi
+
+          MSG="${MSG}"$'\n'"<${LINK}>"    # <>で囲むとリンクのプレビューが出ない
+
+          # ===== Discordに送信 =====
+          jq -n --arg c "$MSG" '{content: $c, allowed_mentions: {parse: ["roles"]}}' \
+          | curl -sSf -H "Content-Type: application/json" -d @- "$WEBHOOK"
