@@ -96,3 +96,18 @@ class Scenario(models.Model):
         verbose_name="削除日時",
         auto_now_add=True
     )
+
+class Favorite(models.Model):
+    user = models.ForeignKey(
+        User,
+        verbose_name="ユーザー",
+        on_delete=models.CASCADE
+    )
+    scenario = models.ForeignKey(
+        Scenario,
+        verbose_name="シナリオ",
+        on_delete=models.CASCADE
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True
+    )

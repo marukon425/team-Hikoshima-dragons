@@ -5,3 +5,8 @@ from .models import *
 class ScenarioAdmin(admin.ModelAdmin):
     list_display = ("creatoe", "kind", "difficulty", "title", "description", "character_name", "character_intro", "goal", "condition", "is_public", "share_code", "created_at")
     search_fields = ("creatoe",)
+
+@admin.register(Favorite)
+class FavoriteAdmin(admin.ModelAdmin):
+    list_display = [field.name for field in Favorite._meta.fields]
+    search_fields = [field.name for field in Favorite._meta.fields]
