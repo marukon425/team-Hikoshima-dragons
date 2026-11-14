@@ -26,6 +26,8 @@ jobs:
           HEAD_MSG: ${{ github.event.head_commit.message }}
           COMMITS: ${{ toJSON(github.event.commits) }}
           COMPARE_URL: ${{ github.event.compare }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.event.after }}
           PR_ACTION: ${{ github.event.action }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
@@ -78,10 +80,11 @@ jobs:
 
           # ===== mainが更新されたときだけ、変更ファイルをチェック =====
           if [ "$MAIN_UPDATED" = "true" ]; then
+            # 取得に失敗しても通知自体は送る（|| FILES=""）
             if [ "$EVENT" = "push" ]; then
-              FILES=$(echo "$COMMITS" | jq -r '[.[] | .added[], .modified[], .removed[]] | unique | .[]')
+              FILES=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BEFORE_SHA}...${AFTER_SHA}" --jq '.files[].filename') || FILES=""
             else
-              FILES=$(gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only)
+              FILES=$(gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only) || FILES=""
             fi
 
             # Docker関連
@@ -116,4 +119,3 @@ jobs:
           # ===== Discordに送信 =====
           jq -n --arg c "$MSG" '{content: $c, allowed_mentions: {parse: ["roles"]}}' \
           | curl -sSf -H "Content-Type: application/json" -d @- "$WEBHOOK"
-
